@@ -1,0 +1,99 @@
+//@version=6
+indicator("Quantech Innovation — FVG & Liquidity Sweep Toolkit", overlay=true, max_boxes_count=500, max_lines_count=500)
+
+// =========================================================================
+// Quantech Innovation — Algorithmic Trading Library
+// Component: Market Structure (FVG & Swing Sweeps)
+// Description: Showcase of clean v6 namespaces, type-safety, and performance-optimized rendering.
+// =========================================================================
+
+// --- Inputs ---
+group_fvg  = "Fair Value Gaps (FVG)"
+show_fvg   = input.bool(true, "Display FVGs", group=group_fvg)
+fvg_color_bull = input.color(color.new(color.green, 85), "Bullish FVG", group=group_fvg)
+fvg_color_bear = input.color(color.new(color.red, 85), "Bearish FVG", group=group_fvg)
+
+group_swings = "Swing High/Low Liquidity Sweeps"
+show_swings  = input.bool(true, "Display Swings & Sweeps", group=group_swings)
+swing_length = input.int(5, "Swing Strength (Pivot)", minval=2, group=group_swings)
+line_color_high = input.color(color.red, "Swing High Line", group=group_swings)
+line_color_low  = input.color(color.green, "Swing Low Line", group=group_swings)
+
+// --- Types ---
+type FVG
+    box    fvgBox
+    float  top
+    float  bottom
+    bool   isBullish
+    int    startBar
+
+// --- Global Storage (Dynamic Arrays) ---
+var FVG[] activeFVGs = array.new<FVG>()
+
+// --- FVG Detection Logic ---
+if show_fvg and bar_index > 2
+    // Bullish FVG: Low of candle[0] > High of candle[2]
+    if low[0] > high[2]
+        fvgBox = box.new(left=bar_index - 2, top=low[0], right=bar_index, bottom=high[2], 
+                         bgcolor=fvg_color_bull, border_color=color.new(fvg_color_bull, 50), 
+                         border_style=line.style_dashed)
+        array.push(activeFVGs, FVG.new(fvgBox, low[0], high[2], true, bar_index - 2))
+        
+    // Bearish FVG: High of candle[0] < Low of candle[2]
+    else if high[0] < low[2]
+        fvgBox = box.new(left=bar_index - 2, top=low[2], right=bar_index, bottom=high[0], 
+                         bgcolor=fvg_color_bear, border_color=color.new(fvg_color_bear, 50), 
+                         border_style=line.style_dashed)
+        array.push(activeFVGs, FVG.new(fvgBox, low[2], high[0], false, bar_index - 2))
+
+// --- FVG Mitigation & Clean-Up (Real-time updates to prevent chart clutter) ---
+if array.size(activeFVGs) > 0
+    for i = array.size(activeFVGs) - 1 to 0
+        fvg = array.get(activeFVGs, i)
+        
+        // Extend box to current bar if not mitigated
+        box.set_right(fvg.fvgBox, bar_index)
+        
+        // Mitigation check: Bullish FVG mitigated if candle close goes below FVG bottom
+        bool isMitigated = false
+        if fvg.isBullish and close[0] < fvg.bottom
+            isMitigated := true
+        // Bearish FVG mitigated if candle close goes above FVG top
+        else if not fvg.isBullish and close[0] > fvg.top
+            isMitigated := true
+            
+        // Delete or fade box if mitigated
+        if isMitigated
+            box.delete(fvg.fvgBox)
+            array.remove(activeFVGs, i)
+
+// --- Pivot Points (Swing High / Low Detection) ---
+float pHigh = ta.pivothigh(high, swing_length, swing_length)
+float pLow  = ta.pivotlow(low, swing_length, swing_length)
+
+// Store dynamic lines
+var line highLine = na
+var line lowLine  = na
+
+if show_swings
+    if not na(pHigh)
+        if not na(highLine)
+            line.delete(highLine)
+        highLine := line.new(x1=bar_index - swing_length, y1=pHigh, x2=bar_index, y2=pHigh, 
+                             color=line_color_high, width=1, style=line.style_solid)
+        label.new(bar_index - swing_length, pHigh, "Swing High (Liquidity)", 
+                  color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+                  
+    if not na(pLow)
+        if not na(lowLine)
+            line.delete(lowLine)
+        lowLine := line.new(x1=bar_index - swing_length, y1=pLow, x2=bar_index, y2=pLow, 
+                            color=line_color_low, width=1, style=line.style_solid)
+        label.new(bar_index - swing_length, pLow, "Swing Low (Liquidity)", 
+                  color=color.green, textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// --- Alert Triggers ---
+if ta.change(pHigh) != 0
+    alert('{"event": "swing_high", "value": ' + str.tostring(pHigh) + ', "currency": "' + syminfo.basecurrency + '"}', alert.freq_once_per_bar)
+if ta.change(pLow) != 0
+    alert('{"event": "swing_low", "value": ' + str.tostring(pLow) + ', "currency": "' + syminfo.basecurrency + '"}', alert.freq_once_per_bar)
